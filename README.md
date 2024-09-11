@@ -1,7 +1,7 @@
 # analyze-php
 analyse php for unused functions and graphically show what calls what in a php file
 
-chmod +x analyze-php.php
+chmod +x analyze_php.php
 
 
 #requires
