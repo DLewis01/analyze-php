@@ -1,0 +1,93 @@
+#!/bin/bash
+
+# Input PHP file
+PHP_FILE=$1
+
+if [ -z "$PHP_FILE" ]; then
+  echo "Usage: $0 <php-file>"
+  exit 1
+fi
+
+# Store the main PHP file's directory for relative file paths
+BASE_DIR=$(dirname "$PHP_FILE")
+
+# Output files
+DOT_FILE="function_graph.dot"
+PNG_FILE="function_graph.png"
+
+# Temporary files for function declarations, function calls, and processed files
+FUNC_DECLS=$(mktemp)
+FUNC_CALLS=$(mktemp)
+PROCESSED_FILES=$(mktemp)
+
+# Function to process a PHP file (for includes and main file)
+process_php_file() {
+  local FILE=$1
+
+  # If the file has already been processed, skip it
+  if grep -qx "$FILE" "$PROCESSED_FILES"; then
+    return
+  fi
+
+  # Mark the file as processed
+  echo "$FILE" >> "$PROCESSED_FILES"
+
+  # Extract function declarations from the PHP file
+  grep -Po '(?<=function )\w+' "$FILE" >> "$FUNC_DECLS"
+
+  # Extract function calls from the PHP file
+  grep -Po '\w+(?=\()' "$FILE" | grep -v -E '(if|for|while|switch|return|echo|include|require|require_once)' >> "$FUNC_CALLS"
+
+  # Extract require/include statements and process included files
+  grep -Po '(require|require_once|include)\s*\(?\s*[\'"]([^\'"]+)[\'"]\s*\)?' "$FILE" | while read -r LINE; do
+    INCLUDED_FILE=$(echo "$LINE" | grep -Po '[\'"][^\'"]+[\'"]' | sed "s/[\'\"]//g")
+
+    # Handle relative paths
+    if [[ ! "$INCLUDED_FILE" = /* ]]; then
+      INCLUDED_FILE="$BASE_DIR/$INCLUDED_FILE"
+    fi
+
+    # Check if the file exists before processing
+    if [ -f "$INCLUDED_FILE" ]; then
+      process_php_file "$INCLUDED_FILE"
+    else
+      echo "Warning: Included file $INCLUDED_FILE not found."
+    fi
+  done
+}
+
+# Start processing the main PHP file
+process_php_file "$PHP_FILE"
+
+# Write the DOT file
+echo "digraph FunctionCallGraph {" > "$DOT_FILE"
+
+# Iterate through each function declaration and check if it's called
+while read -r DECL; do
+  if grep -q "^$DECL$" "$FUNC_CALLS"; then
+    echo "  \"$DECL\" [shape=ellipse];" >> "$DOT_FILE"
+  else
+    echo "  \"$DECL\" [shape=ellipse, style=dashed, color=red, label=\"$DECL (unused)\"];" >> "$DOT_FILE"
+  fi
+done < <(sort -u "$FUNC_DECLS")
+
+# Now handle the function call relationships
+while read -r CALLER; do
+  if grep -q "^$CALLER$" "$FUNC_DECLS"; then
+    grep -Po "(?<=${CALLER}\().+?\)" "$PHP_FILE" | grep -Po '\w+' | while read -r CALLED; do
+      echo "  \"$CALLER\" -> \"$CALLED\";" >> "$DOT_FILE"
+    done
+  fi
+done < <(sort -u "$FUNC_DECLS")
+
+# End DOT format
+echo "}" >> "$DOT_FILE"
+
+# Generate PNG using Graphviz's dot command
+dot -Tpng "$DOT_FILE" -o "$PNG_FILE"
+
+# Output a success message with the result file location
+echo "Graph has been generated: $PNG_FILE"
+
+# Clean up temporary files
+rm "$FUNC_DECLS" "$FUNC_CALLS" "$PROCESSED_FILES"
